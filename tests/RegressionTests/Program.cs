@@ -119,7 +119,7 @@ Run("malformed JSON is skipped while valid options remain available", dir =>
     Check(diagnostics.JsonFilesFound == 2 && diagnostics.JsonFilesParsed == 1, "Invalid JSON diagnostics are wrong.");
 });
 
-Run("full generated group fails without changing metadata", dir =>
+Run("full generated group creates another page without changing the existing page", dir =>
 {
     Write(dir, "group_001_dances.json", Group(Option("A", "a.pap")));
     var source = EmoteOverrideScanner.ScanMod(dir, out _).Single();
@@ -128,9 +128,10 @@ Run("full generated group fails without changing metadata", dir =>
     full["Type"] = "Multi";
     var path = Write(dir, "group_002_nulloverride.json", full);
     var before = File.ReadAllBytes(path);
-    try { Save(dir, source, Wave, "nulloverride/new.pap"); throw new Exception("Expected capacity failure."); }
-    catch (InvalidDataException) { }
-    Check(before.SequenceEqual(File.ReadAllBytes(path)), "Failed append changed existing metadata.");
+    Save(dir, source, Wave, "nulloverride/new.pap");
+    Check(before.SequenceEqual(File.ReadAllBytes(path)), "Creating another page changed existing metadata.");
+    Check(Directory.GetFiles(dir, "*nulloverride.json").Length == 2, "A new page is required after 32 variations.");
+    Check(EmoteOverrideScanner.ScanMod(dir, out _).Count == 1, "All generated pages should be excluded.");
 });
 
 Run("root/default option copies keep supporting metadata", dir =>
@@ -153,6 +154,127 @@ Run("modern groups with repeated names still produce distinct source identities"
     Check(sources.Count == 2 && sources.Select(s => s.SourceId).Distinct().Count() == 2,
         "Group and option indices must distinguish repeated names in the same file.");
 });
+
+Run("effect-only dropdown choices inherit the required PAP and remain independent", dir =>
+{
+    var required = Group(Option("Required animation", "shared-dance.pap"));
+    required["Name"] = "Required";
+    var effects = Group(
+        new JObject { ["Name"] = "Effect 1", ["Files"] = new JObject { ["vfx/effect.avfx"] = "effect1.avfx" } },
+        new JObject { ["Name"] = "Effect 2", ["Files"] = new JObject { ["vfx/effect.avfx"] = "effect2.avfx" } });
+    effects["Name"] = "Effects";
+    effects["Priority"] = 1;
+    Write(dir, "meta.json", new JObject { ["FileVersion"] = 4, ["Groups"] = new JArray(required, effects) });
+    var choices = EmoteOverrideScanner.ScanMod(dir, out _);
+    Check(choices.Count == 3, "Effect-only choices must be included in the scan.");
+    var catalog = choices[0].Catalog;
+    var variants = ModVariationComposer.ExpandGroup(catalog, catalog.Groups.Single(g => g.Name == "Effects"), catalog.DefaultSelection);
+    Check(variants.Count == 2, "Each effect choice must produce its own variation.");
+    for (var index = 0; index < variants.Count; index++)
+    {
+        Check(variants[index].Entries.Single().ModdedPapPath == "shared-dance.pap", "Missing shared animation.");
+        Save(dir, variants[index], Wave, $"nulloverride/variation{index}.pap");
+    }
+    var metadata = JObject.Parse(File.ReadAllText(Path.Combine(dir, "meta.json")));
+    var copies = (JArray)metadata["Groups"]![2]!["Options"]!;
+    Check(copies.Count == 2, "Both effects must get independently selectable copies.");
+    Check((string?)copies[0]["Files"]!["vfx/effect.avfx"] == "effect1.avfx", "Effect 1 was lost.");
+    Check((string?)copies[1]["Files"]!["vfx/effect.avfx"] == "effect2.avfx", "Effect 2 was lost.");
+    Check(copies.All(copy => copy["Files"]![Wave] != null), "Both variations may use the same target emote.");
+    Check(JToken.DeepEquals(metadata["Groups"]![0], required) && JToken.DeepEquals(metadata["Groups"]![1], effects),
+        "Original dropdowns were changed.");
+});
+
+Run("default PAP plus multiple effect checkboxes resolves the chosen combination", dir =>
+{
+    Write(dir, "default_mod.json", Option("Default animation", "base.pap"));
+    var effects = Group(
+        new JObject { ["Name"] = "Glow", ["Files"] = new JObject { ["vfx/glow.avfx"] = "glow.avfx" } },
+        new JObject { ["Name"] = "Music", ["Files"] = new JObject { ["sound/music.scd"] = "music.scd" } });
+    effects["Type"] = "Multi";
+    Write(dir, "group_001_effects.json", effects);
+    var choices = EmoteOverrideScanner.ScanMod(dir, out _);
+    var catalog = choices[0].Catalog;
+    var variant = ModVariationComposer.Compose(catalog, choices);
+    Check(variant.Entries.Single().ModdedPapPath == "base.pap", "Default source PAP is missing.");
+    Check(variant.OriginalOption["Files"]!["vfx/glow.avfx"] != null && variant.OriginalOption["Files"]!["sound/music.scd"] != null,
+        "A combined variation must retain both selected checkboxes.");
+    var single = ModVariationComposer.Compose(catalog, choices.Where(choice => choice.OptionName != "Music"));
+    Check(single.OriginalOption["Files"]!["sound/music.scd"] == null, "An unchecked effect leaked into the copy.");
+});
+
+Run("multiple emotes and effects support original and swapped triggers in one variation", dir =>
+{
+    var animation = Option("Both dances", "dance.pap");
+    animation["Files"]![Sit] = "sit.pap";
+    Write(dir, "default_mod.json", animation);
+    Write(dir, "group_001_effects.json", Group(new JObject
+    {
+        ["Name"] = "Effect", ["Files"] = new JObject { ["vfx/effect.avfx"] = "effect.avfx" }
+    }));
+    var choices = EmoteOverrideScanner.ScanMod(dir, out _);
+    var variant = ModVariationComposer.Compose(choices[0].Catalog, choices);
+    Check(OptionAssignmentPlanner.Build(variant).Count == 2, "Each source emote needs its own assignment.");
+    var copy = PenumbraGroupWriter.CreateOptionCopy(variant, "Mixed", "Dance swapped, sit original",
+        new Dictionary<string, string> { [Wave] = "swapped.pap", [Sit] = "sit.pap" });
+    Check(copy["Files"]![Dance] == null && copy["Files"]![Wave] != null, "Dance was not swapped.");
+    Check((string?)copy["Files"]![Sit] == "sit.pap", "Keep-original choice was lost.");
+    Check(copy["Files"]!["vfx/effect.avfx"] != null, "Effect was lost.");
+});
+
+Run("combinations respect dropdown exclusivity and option priority", dir =>
+{
+    var lower = Group(Option("Lower", "lower.pap"));
+    var higher = Group(Option("Higher", "higher.pap"), Option("Alternate", "alternate.pap"));
+    lower["Name"] = "Lower group"; lower["Priority"] = 0;
+    higher["Name"] = "Higher group"; higher["Priority"] = 2;
+    Write(dir, "meta.json", new JObject { ["FileVersion"] = 4, ["Groups"] = new JArray(higher, lower) });
+    var choices = EmoteOverrideScanner.ScanMod(dir, out _);
+    var catalog = choices[0].Catalog;
+    var variant = ModVariationComposer.Compose(catalog, catalog.DefaultSelection);
+    Check(variant.Entries.Single().ModdedPapPath == "higher.pap", "Higher-priority group should determine the effective PAP.");
+    try { ModVariationComposer.Compose(catalog, choices); throw new Exception("Expected dropdown selection error."); }
+    catch (InvalidDataException) { }
+});
+
+Run("modern generated pages allow more than 32 variations", dir =>
+{
+    Write(dir, "meta.json", new JObject { ["FileVersion"] = 4, ["Groups"] = new JArray(Group(Option("A", "a.pap"))) });
+    var source = EmoteOverrideScanner.ScanMod(dir, out _).Single();
+    for (var i = 0; i < 34; i++) Save(dir, source, Wave, "nulloverride/copy.pap");
+    var metadata = JObject.Parse(File.ReadAllText(Path.Combine(dir, "meta.json")));
+    Check(metadata["Groups"]!.Count() == 3, "Expected original group and two generated pages.");
+    Check(metadata["Groups"]![1]!["Options"]!.Count() == 32 && metadata["Groups"]![2]!["Options"]!.Count() == 2,
+        "Variations were lost at the page boundary.");
+    Check(EmoteOverrideScanner.ScanMod(dir, out _).Count == 1, "Generated pages leaked into source choices.");
+});
+
+if (args.Length == 2 && args[0] == "--inspect-mod")
+{
+    // Read-only integration check against an installed mod. Nothing is generated
+    // in the supplied directory; copying is covered by isolated fixtures above.
+    var choices = EmoteOverrideScanner.ScanMod(args[1], out _);
+    Check(choices.Count > 0, "Installed mod has no recognizable source animation.");
+    var catalog = choices[0].Catalog;
+    foreach (var group in catalog.Groups)
+    {
+        var variations = ModVariationComposer.ExpandGroup(catalog, group, catalog.DefaultSelection);
+        Console.WriteLine($"READ-ONLY {group.Name}: {group.Options.Count} choices -> {variations.Count} complete variations.");
+        Check(variations.All(variation => variation.Entries.Count > 0), "A variation lost its shared source animation.");
+    }
+    var effectsGroup = catalog.Groups.Single(group => group.Name == "Variants");
+    var effectVariations = ModVariationComposer.ExpandGroup(catalog, effectsGroup, catalog.DefaultSelection);
+    for (int i = 0; i < effectVariations.Count; i++)
+    {
+        var originalFiles = (JObject)effectsGroup.Options[i].OriginalOption["Files"]!;
+        foreach (var mapping in originalFiles.Properties())
+            Check(JToken.DeepEquals(effectVariations[i].OriginalOption["Files"]![mapping.Name], mapping.Value),
+                "An installed effect choice lost its exact VFX/texture mappings.");
+        Check(effectVariations[i].Entries.All(entry => File.Exists(Path.Combine(args[1], entry.ModdedPapPath))),
+            "An installed variation references a missing source PAP.");
+    }
+    Console.WriteLine($"READ-ONLY verified exact VFX/texture mappings and source PAP existence for all {effectVariations.Count} installed variations.");
+}
 
 Console.WriteLine($"Passed {passed} regression scenarios.");
 

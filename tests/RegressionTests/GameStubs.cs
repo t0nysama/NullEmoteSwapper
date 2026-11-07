@@ -26,6 +26,7 @@ namespace NullEmoteSwapper.Core
             {
                 "dance" => new() { RowId = 1, Name = "Dance", Command = "/dance" },
                 "sit" => new() { RowId = 2, Name = "Sit", Command = "/sit" },
+                "salute_emp" => new() { RowId = 3, Name = "Imperial Salute", Command = "/imperialsalute" },
                 _ => null
             };
         }

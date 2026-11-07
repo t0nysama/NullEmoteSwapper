@@ -50,11 +50,11 @@ public static class PenumbraGroupWriter
             var groups = metadata!["Groups"] as JArray ?? new JArray();
             if (metadata["Groups"] is not JArray)
                 metadata["Groups"] = groups;
-            var group = groups.OfType<JObject>().FirstOrDefault(g =>
-                string.Equals((string?)g["Name"], "NullEmoteSwapper", StringComparison.OrdinalIgnoreCase));
+            var generatedGroups = groups.OfType<JObject>().Where(g => IsGeneratedGroupName((string?)g["Name"])).ToList();
+            var group = generatedGroups.FirstOrDefault(g => HasRoom(g));
             if (group == null)
             {
-                group = NewGroup();
+                group = NewGroup(generatedGroups.Count + 1);
                 group["Id"] = Guid.NewGuid().ToString();
                 groups.Add(group);
             }
@@ -65,28 +65,43 @@ public static class PenumbraGroupWriter
         else
         {
             var groupFiles = Directory.GetFiles(modFolder, "group_*.json", SearchOption.TopDirectoryOnly);
-            var targetPath = groupFiles.FirstOrDefault(f =>
-                Path.GetFileNameWithoutExtension(f).Contains("nulloverride", StringComparison.OrdinalIgnoreCase));
-            if (targetPath == null)
+            var existing = groupFiles.Where(file => Path.GetFileNameWithoutExtension(file)
+                    .Contains("nulloverride", StringComparison.OrdinalIgnoreCase))
+                .Select(file => (Path: file, Group: JObject.Parse(File.ReadAllText(file))))
+                .ToList();
+            var available = existing.FirstOrDefault(entry => HasRoom(entry.Group));
+            var targetPath = available.Path;
+            var group = available.Group;
+            if (group == null)
             {
-                // Group indices are not necessarily contiguous.
                 var index = 1;
-                while (groupFiles.Any(f => Path.GetFileName(f).StartsWith($"group_{index:D3}_", StringComparison.OrdinalIgnoreCase)))
+                while (groupFiles.Any(file => Path.GetFileName(file).StartsWith($"group_{index:D3}_", StringComparison.OrdinalIgnoreCase)))
                     index++;
                 targetPath = Path.Combine(modFolder, $"group_{index:D3}_nulloverride.json");
+                group = NewGroup(existing.Count + 1);
             }
-            var group = File.Exists(targetPath) ? JObject.Parse(File.ReadAllText(targetPath)) : NewGroup();
             AddOption(group, option, false);
-            WriteJson(targetPath, group);
+            WriteJson(targetPath!, group);
         }
         Plugin.Log.Information("[NullEmoteSwapper] Copied source option {SourceId} to {OptionName} with {MappingCount} replacement PAP mappings.",
             source.SourceId, optionName, finalMappings.Count);
     }
 
-    private static JObject NewGroup() => new()
+    public static bool IsGeneratedGroupName(string? name) =>
+        string.Equals(name, "NullEmoteSwapper", StringComparison.OrdinalIgnoreCase)
+        || (name?.StartsWith("NullEmoteSwapper ", StringComparison.OrdinalIgnoreCase) ?? false);
+
+    private static bool HasRoom(JObject group)
+    {
+        if (!string.Equals((string?)group["Type"], "Multi", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("An existing NullEmoteSwapper group is not a Multi group.");
+        return (group["Options"] as JArray)?.Count is not >= 32;
+    }
+
+    private static JObject NewGroup(int number) => new()
     {
         ["Version"] = "1.0.0",
-        ["Name"] = "NullEmoteSwapper",
+        ["Name"] = number == 1 ? "NullEmoteSwapper" : $"NullEmoteSwapper {number}",
         ["Description"] = "Option copies with independent emote assignments.",
         ["Type"] = "Multi",
         ["Priority"] = 9999,
@@ -109,6 +124,7 @@ public static class PenumbraGroupWriter
         else
             option.Remove("Id");
         options.Add(option);
+        group["Priority"] = 9999;
     }
 
     private static void WriteJson(string path, JObject value)

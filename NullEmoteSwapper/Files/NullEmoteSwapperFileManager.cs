@@ -52,7 +52,7 @@ namespace NullEmoteSwapper.Files
                 }
                 catch
                 {
-                    // Ungültige JSON ignorieren
+                    // UngÃ¼ltige JSON ignorieren
                     continue;
                 }
 
@@ -114,7 +114,7 @@ namespace NullEmoteSwapper.Files
                 }
             }
 
-            // optional: duplizierte Einträge zusammenfassen
+            // optional: duplizierte EintrÃ¤ge zusammenfassen
             return result
                 .OrderBy(r => r.GroupName, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(r => r.OptionName, StringComparer.OrdinalIgnoreCase)
@@ -190,8 +190,7 @@ namespace NullEmoteSwapper.Files
                 var metadata = JObject.Parse(File.ReadAllText(metaPath));
                 return (int?)metadata["FileVersion"] >= 4
                        && metadata["Groups"] is JArray groups
-                       && groups.OfType<JObject>().Any(group => string.Equals(
-                           (string?)group["Name"], "NullEmoteSwapper", StringComparison.OrdinalIgnoreCase));
+                       && groups.OfType<JObject>().Any(group => Penumbra.PenumbraGroupWriter.IsGeneratedGroupName((string?)group["Name"]));
             }
             catch
             {
@@ -212,8 +211,7 @@ namespace NullEmoteSwapper.Files
                     return false;
 
                 var matches = groups.OfType<JObject>()
-                    .Where(group => string.Equals(
-                        (string?)group["Name"], "NullEmoteSwapper", StringComparison.OrdinalIgnoreCase))
+                    .Where(group => Penumbra.PenumbraGroupWriter.IsGeneratedGroupName((string?)group["Name"]))
                     .ToList();
                 if (matches.Count == 0)
                     return false;

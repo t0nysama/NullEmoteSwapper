@@ -4,7 +4,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using NullEmoteSwapper;
 
 namespace NullEmoteSwapper.Core;
 
@@ -20,149 +19,134 @@ public static class EmoteOverrideScanner
 
     public static List<RemappableOption> ScanMod(string modDir, out ScanDiagnostics diagnostics)
     {
-        var results = new List<RemappableOption>();
+        var catalog = new ModOptionCatalog();
         diagnostics = new ScanDiagnostics();
-        var jsonFiles = Directory.GetFiles(modDir, "*.json", SearchOption.TopDirectoryOnly);
-        diagnostics.JsonFilesFound = jsonFiles.Length;
-        Plugin.Log.Information("[NullEmoteSwapper] Scanner found {JsonFileCount} top-level JSON file(s) in {ModDirectory}.", jsonFiles.Length, modDir);
-
-        foreach (var file in jsonFiles)
+        var files = Directory.GetFiles(modDir, "*.json", SearchOption.TopDirectoryOnly)
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToList();
+        diagnostics.JsonFilesFound = files.Count;
+        foreach (var file in files)
         {
-            JObject obj;
-            try
-            {
-                obj = JObject.Parse(File.ReadAllText(file));
-            }
+            if (Path.GetFileNameWithoutExtension(file).Contains("nulloverride", StringComparison.OrdinalIgnoreCase))
+                continue;
+            JObject root;
+            try { root = JObject.Parse(File.ReadAllText(file)); }
             catch (Exception ex)
             {
-                Plugin.Log.Warning(ex, "[NullEmoteSwapper] Skipping unreadable or invalid JSON file {JsonFile}.", file);
+                Plugin.Log.Warning(ex, "[NullEmoteSwapper] Skipping invalid JSON {JsonFile}.", file);
                 continue;
             }
             diagnostics.JsonFilesParsed++;
-
-            string modName = obj["Name"]?.ToString() ?? Path.GetFileNameWithoutExtension(file);
-            var groups = obj["Groups"] as JArray;
-
-            if (groups != null)
+            if (root["Groups"] is JArray groups)
             {
-                Plugin.Log.Debug("[NullEmoteSwapper] Parsing modern Penumbra metadata {JsonFile} with {GroupCount} group(s).", file, groups.Count);
-                foreach (var group in groups)
-                {
-                    string groupName = group["Name"]?.ToString() ?? modName;
-                    var groupOptions = (JArray?)group["Options"]?.DeepClone() ?? new JArray();
-                    var groupFiles = group["Files"] as JObject;
-                    if (groupFiles != null)
-                    {
-                        groupOptions.Insert(0, DefaultOption((JObject)group));
-                    }
-
-                    ScanOptions(file, group.Path, groupName, groupOptions, results, diagnostics);
-                }
-
-                continue;
+                // Some formats also store common files outside the option groups.
+                if (HasPayload(root))
+                    ReadGroup(catalog, file, "root", RootPayload(root), diagnostics);
+                for (int i = 0; i < groups.Count; i++)
+                    if (groups[i] is JObject group)
+                        ReadGroup(catalog, file, $"Groups[{i}]", group, diagnostics);
             }
-
-            Plugin.Log.Debug("[NullEmoteSwapper] Parsing legacy or root-level metadata {JsonFile}.", file);
-
-            // Legacy Penumbra group format stores options/files at the JSON root.
-            var options = (JArray?)obj["Options"]?.DeepClone() ?? new JArray();
-            var rootFiles = obj["Files"] as JObject;
-            if (rootFiles != null)
+            else if (root["Options"] is JArray || HasPayload(root))
             {
-                options.Insert(0, DefaultOption(obj));
+                ReadGroup(catalog, file, "root", root, diagnostics);
             }
-
-            ScanOptions(file, string.Empty, modName, options, results, diagnostics);
         }
-
-        Plugin.Log.Information("[NullEmoteSwapper] Scan finished for {ModDirectory}: JSON {ParsedJsonCount}/{FoundJsonCount}, PAP mappings {PapMappingCount}, recognized emote mappings {EmoteMappingCount}, remappable options {OptionCount}.",
-            modDir, diagnostics.JsonFilesParsed, diagnostics.JsonFilesFound, diagnostics.PapMappingsFound, diagnostics.EmoteMappingsFound, results.Count);
-        return results;
+        var options = catalog.Groups.SelectMany(group => group.Options).ToList();
+        // An effect/texture-only option is useful whenever this mod has a source
+        // animation elsewhere. Do not discard it merely because it owns no PAP.
+        var hasEmotes = options.Any(option => option.Entries.Count > 0)
+            || catalog.Groups.Any(group => FindEntries(group.BasePayload, "", "", null).Count > 0);
+        Plugin.Log.Information("[NullEmoteSwapper] Scan found {OptionCount} choices, including effect-only choices, and {EmoteCount} emote mappings.",
+            options.Count, diagnostics.EmoteMappingsFound);
+        return hasEmotes ? options : new List<RemappableOption>();
     }
 
-    private static JObject DefaultOption(JObject root)
+    private static bool HasPayload(JObject value) => value["Files"] is JObject
+        || value["FileSwaps"] is JObject || value["Manipulations"] is JArray;
+
+    private static JObject RootPayload(JObject root)
     {
-        var option = new JObject { ["Name"] = "(default)" };
+        var result = new JObject { ["Name"] = "(default)" };
         foreach (var field in new[] { "Files", "FileSwaps", "Manipulations", "Description", "Image" })
-        {
-            if (root[field] is { } value)
-                option[field] = value.DeepClone();
-        }
-        return option;
+            if (root[field] is { } token)
+                result[field] = token.DeepClone();
+        return result;
     }
 
-    private static void ScanOptions(
-        string sourceFile,
-        string groupPath,
-        string groupName,
-        JArray options,
-        List<RemappableOption> results,
-        ScanDiagnostics diagnostics)
+    private static void ReadGroup(ModOptionCatalog catalog, string file, string location,
+        JObject data, ScanDiagnostics diagnostics)
     {
-        if (string.Equals(groupName, "NullEmoteSwapper", StringComparison.OrdinalIgnoreCase)
-            || Path.GetFileNameWithoutExtension(sourceFile).Contains("nulloverride", StringComparison.OrdinalIgnoreCase))
+        var name = (string?)data["Name"] ?? Path.GetFileNameWithoutExtension(file);
+        if (Penumbra.PenumbraGroupWriter.IsGeneratedGroupName(name))
             return;
-
-        foreach (var opt in options.OfType<JObject>())
+        var type = (string?)data["Type"] ?? "Single";
+        if (!string.Equals(type, "Single", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(type, "Multi", StringComparison.OrdinalIgnoreCase))
         {
-            string optionName = opt["Name"]?.ToString() ?? "Option";
-            var filesObj = opt["Files"] as JObject;
-            if (filesObj == null)
-                continue;
-
-            var entries = new List<ParsedEmoteOverride>();
-            foreach (var kv in filesObj)
-            {
-                string gamePath = kv.Key;
-                string papPath = kv.Value?.ToString() ?? string.Empty;
-                if (!papPath.EndsWith(".pap", StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                diagnostics.PapMappingsFound++;
-                var emote = EmotePathResolver.Resolve(gamePath);
-                if (emote == null)
-            {
-                Plugin.Log.Debug("[NullEmoteSwapper] Ignoring PAP mapping because the game path did not resolve to a known emote: {GamePath} -> {PapPath}.", gamePath, papPath);
-                    continue;
-            }
-
-                diagnostics.EmoteMappingsFound++;
-                entries.Add(new ParsedEmoteOverride
-                {
-                    GroupName = groupName,
-                    OptionName = optionName,
-                    GamePath = gamePath,
-                    ModdedPapPath = papPath,
-                    EmoteName = emote.Name,
-                    EmoteCommand = emote.Command,
-                    EmoteRowId = emote.RowId
-                });
-            }
-
-            if (entries.Count == 0)
-                continue;
-
-            var papGroups = entries
-                .GroupBy(e => e.ModdedPapPath, StringComparer.OrdinalIgnoreCase)
-                .Select(g => new PapSourceGroup
-                {
-                    SourcePap = g.Key,
-                    GamePaths = g.Select(e => e.GamePath).ToList()
-                })
-                .ToList();
-
-            results.Add(new RemappableOption
-            {
-                SourceId = Path.GetFileName(sourceFile) + ":" + groupPath + ":" + opt.Path,
-                OriginalOption = (JObject)opt.DeepClone(),
-                GroupName = groupName,
-                OptionName = optionName,
-                Entries = entries,
-                PapSources = papGroups,
-                IsSafeToRemap = true
-            });
-            Plugin.Log.Debug("[NullEmoteSwapper] Found remappable option {GroupName} / {OptionName}: {EntryCount} emote PAP path(s), {UniqueEmoteCount} unique trigger(s).",
-                groupName, optionName, entries.Count, entries.Select(entry => entry.EmoteRowId).Distinct().Count());
+            Plugin.Log.Debug("[NullEmoteSwapper] Unsupported option group type {GroupType} in {File}.", type, file);
+            return;
         }
+        var rawOptions = data["Options"] as JArray;
+        var isStandalone = rawOptions == null;
+        var group = new ModOptionGroup
+        {
+            SourceId = Path.GetFileName(file) + ":" + location,
+            Name = name,
+            Type = type,
+            Priority = (int?)data["Priority"] ?? 0,
+            BasePayload = isStandalone ? new JObject() : RootPayload(data)
+        };
+        catalog.Groups.Add(group);
+        var options = rawOptions ?? new JArray(RootPayload(data));
+        var defaultSettings = (ulong?)data["DefaultSettings"] ?? 0;
+        for (int index = 0; index < options.Count; index++)
+        {
+            if (options[index] is not JObject payload)
+                continue;
+            var optionName = (string?)payload["Name"] ?? "Option";
+            var option = new RemappableOption
+            {
+                Catalog = catalog,
+                SourceGroupId = group.SourceId,
+                SourceId = group.SourceId + $":Options[{index}]",
+                GroupName = name,
+                GroupType = type,
+                OptionIndex = index,
+                OptionPriority = (int?)payload["Priority"] ?? 0,
+                DefaultSelected = isStandalone || (type.Equals("Single", StringComparison.OrdinalIgnoreCase)
+                    ? (ulong)index == defaultSettings : index < 64 && (defaultSettings & (1UL << index)) != 0),
+                OptionName = optionName,
+                OriginalOption = (JObject)payload.DeepClone(),
+                Entries = FindEntries(payload, name, optionName, diagnostics),
+                IsSafeToRemap = true
+            };
+            option.PapSources = option.Entries.GroupBy(entry => entry.ModdedPapPath, StringComparer.OrdinalIgnoreCase)
+                .Select(entries => new PapSourceGroup { SourcePap = entries.Key, GamePaths = entries.Select(entry => entry.GamePath).ToList() }).ToList();
+            group.Options.Add(option);
+        }
+    }
+
+    internal static List<ParsedEmoteOverride> FindEntries(JObject payload, string groupName,
+        string optionName, ScanDiagnostics? diagnostics = null)
+    {
+        var entries = new List<ParsedEmoteOverride>();
+        if (payload["Files"] is not JObject mappings)
+            return entries;
+        foreach (var mapping in mappings.Properties())
+        {
+            var source = (string?)mapping.Value ?? string.Empty;
+            if (!source.EndsWith(".pap", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (diagnostics != null) diagnostics.PapMappingsFound++;
+            var emote = EmotePathResolver.Resolve(mapping.Name);
+            if (emote == null) continue;
+            if (diagnostics != null) diagnostics.EmoteMappingsFound++;
+            entries.Add(new ParsedEmoteOverride
+            {
+                GroupName = groupName, OptionName = optionName,
+                GamePath = mapping.Name, ModdedPapPath = source,
+                EmoteName = emote.Name, EmoteCommand = emote.Command, EmoteRowId = emote.RowId
+            });
+        }
+        return entries;
     }
 }

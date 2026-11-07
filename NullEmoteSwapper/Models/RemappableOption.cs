@@ -6,6 +6,12 @@ namespace NullEmoteSwapper.Core.Models;
 public class RemappableOption
 {
     // JSON location, independent of display names and shared emote IDs.
+    public ModOptionCatalog Catalog { get; set; } = null!;
+    public string SourceGroupId { get; set; } = string.Empty;
+    public string GroupType { get; set; } = "Single";
+    public int OptionIndex { get; set; }
+    public int OptionPriority { get; set; }
+    public bool DefaultSelected { get; set; }
     public string SourceId { get; set; } = string.Empty;
     public JObject OriginalOption { get; set; } = new();
     public string GroupName { get; set; } = string.Empty;

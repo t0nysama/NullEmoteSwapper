@@ -10,6 +10,7 @@
     <Compile Include="../../NullEmoteSwapper/Models/*.cs" Link="Models/%(Filename)%(Extension)" />
     <Compile Include="../../NullEmoteSwapper/Core/EmoteOverrideScanner.cs" Link="EmoteOverrideScanner.cs" />
     <Compile Include="../../NullEmoteSwapper/Core/OptionAssignmentPlanner.cs" Link="OptionAssignmentPlanner.cs" />
+    <Compile Include="../../NullEmoteSwapper/Core/ModVariationComposer.cs" Link="ModVariationComposer.cs" />
     <Compile Include="../../NullEmoteSwapper/Penumbra/PenumbraGroupWriter.cs" Link="PenumbraGroupWriter.cs" />
   </ItemGroup>
 </Project>

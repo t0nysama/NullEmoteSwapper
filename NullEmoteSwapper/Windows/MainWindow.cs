@@ -45,7 +45,8 @@ namespace NullEmoteSwapper.Windows
         // State: emote scanning
         private List<RemappableOption> remappableOptions = new();
         private bool showUnsafeOptions = false;
-        private RemappableOption? selectedOption = null;
+        private readonly List<RemappableOption> variationSelections = new();
+        private string variationName = string.Empty;
         private List<SourceEmoteAssignment> sourceEmoteAssignments = new();
         private bool isCreatingOverrides;
 
@@ -144,7 +145,7 @@ namespace NullEmoteSwapper.Windows
             lastScanError = null;
             lastScanMessage = "Scanning mod JSON files for emote-linked PAP overrides...";
             remappableOptions.Clear();
-            selectedOption = null;
+            variationSelections.Clear();
             sourceEmoteAssignments.Clear();
             Plugin.Log.Information("[NullEmoteSwapper] Starting scan for mod {ModName} ({ModDirectory}).", selectedModName ?? selectedDirectory, selectedDirectory);
             Svc.Chat.Print($"[NullEmoteSwapper] Scanning {selectedModName ?? selectedDirectory} for emote PAP mappings...");
@@ -177,6 +178,8 @@ namespace NullEmoteSwapper.Windows
                     return (Options: options, Diagnostics: diagnostics);
                 });
                 remappableOptions = scanResult.Options;
+                if (remappableOptions.Count > 0)
+                    variationSelections.AddRange(remappableOptions[0].Catalog.DefaultSelection);
 
                 var distinctEmoteCount = scanResult.Options
                     .SelectMany(option => option.Entries)
@@ -303,7 +306,7 @@ namespace NullEmoteSwapper.Windows
         private void DrawHeader()
         {
             // Title
-            ImGui.TextColored(new Vector4(0.85f, 0.9f, 1.0f, 1.0f), "NullEmoteSwapper – Emote Override Wizard");
+            ImGui.TextColored(new Vector4(0.85f, 0.9f, 1.0f, 1.0f), "NullEmoteSwapper â€“ Emote Override Wizard");
 
             ImGui.Spacing();
 
@@ -336,7 +339,7 @@ namespace NullEmoteSwapper.Windows
 
             DrawStepButton("1. Mod", WizardStep.SelectMod, true, hasMod);
             ImGui.SameLine();
-            DrawStepButton("2. Source options", WizardStep.SelectSource, hasSource, hasSelectedSource);
+            DrawStepButton("2. Variations", WizardStep.SelectSource, hasSource, hasSelectedSource);
             ImGui.SameLine();
             DrawStepButton("3. Target emote", WizardStep.SelectTarget, hasSelectedSource, hasTarget);
 
@@ -397,11 +400,11 @@ namespace NullEmoteSwapper.Windows
         }
 
         // ======================================
-        // STEP 1 – Mod selection
+        // STEP 1 â€“ Mod selection
         // ======================================
         private void DrawStepCard_SelectMod()
         {
-            BeginCard("NullEmoteSwapperStepMod", "Step 1 – Select source mod",
+            BeginCard("NullEmoteSwapperStepMod", "Step 1 â€“ Select source mod",
                 "Select the Penumbra mod that contains the dance / emote you want to rebind.");
 
             if (isLoadingMods)
@@ -457,7 +460,7 @@ namespace NullEmoteSwapper.Windows
                         selectedModDirectory = dir;
                         selectedModName = name;
                         remappableOptions.Clear();
-                        selectedOption = null;
+                        variationSelections.Clear();
                         sourceEmoteAssignments.Clear();
                         lastScanError = null;
                         lastScanMessage = null;
@@ -564,162 +567,103 @@ namespace NullEmoteSwapper.Windows
         }
 
         // ======================================
-        // STEP 2 – Source option selection
+        // STEP 2 â€“ Source option selection
         // ======================================
+        private void QueueVariations(IEnumerable<RemappableOption> variations)
+        {
+            // Materialize first: an invalid combination must not leave a partial queue.
+            var prepared = variations.Select(variation => OptionAssignmentPlanner.Build(variation)).ToList();
+            foreach (var assignments in prepared)
+            {
+                foreach (var assignment in assignments)
+                {
+                    // Keeping the original is a first-class choice, including for a
+                    // mod that replaces several emotes in the same variation.
+                    assignment.TargetEmote = new LuminaEmote
+                    {
+                        RowId = assignment.SourceEmoteRowId,
+                        Name = assignment.SourceEmoteName,
+                        Command = assignment.SourceEmoteCommand
+                    };
+                }
+                sourceEmoteAssignments.AddRange(assignments);
+            }
+            lastScanError = null;
+        }
+
         private void DrawStepCard_SelectSource()
         {
-            BeginCard("NullEmoteSwapperStepSource", "Step 2 – Choose source options",
-                "Select one or more options. Each gets its own emote assignments, even when they share an emote.");
-
-            if (selectedModDirectory == null)
+            BeginCard("NullEmoteSwapperStepSource", "Step 2 â€“ Build variations",
+                "Combine the required animation with any dropdown choices and effect checkboxes. Add each combination you want to copy.");
+            if (isScanningMod || remappableOptions.Count == 0)
             {
-                ImGui.Text("No mod selected yet (Step 1).");
+                ImGui.Text(isScanningMod ? "Scanning mod..." : "Select and scan a mod in Step 1.");
                 EndCard();
                 return;
             }
-
-            if (isScanningMod)
+            var catalog = remappableOptions[0].Catalog;
+            foreach (var group in catalog.Groups.Where(group => group.Options.Count > 0))
             {
-                ImGui.Text("Scanning mod...");
-                EndCard();
-                return;
-            }
-
-            if (remappableOptions.Count == 0)
-            {
-                ImGui.Text("No emote-based PAP overrides detected in this mod.");
-                EndCard();
-                return;
-            }
-
-            //ImGui.Checkbox("Show unsafe / multi-source options", ref showUnsafeOptions);
-            ImGui.Spacing();
-
-            var filtered = remappableOptions
-                .Where(o => showUnsafeOptions || o.IsSafeToRemap)
-                .ToList();
-
-            if (filtered.Count == 0)
-            {
-                ImGui.Text("No safe options found with single PAP source.");
-                EndCard();
-                return;
-            }
-
-            var flags = ImGuiTableFlags.RowBg
-                        | ImGuiTableFlags.BordersInnerV
-                        | ImGuiTableFlags.SizingStretchProp;
-
-            if (ImGui.BeginTable("NullEmoteSwapperOverrideTable", 3, flags))
-            {
-                ImGui.TableSetupColumn("Group");
-                ImGui.TableSetupColumn("Option");
-                ImGui.TableSetupColumn("Emotes");
-                ImGui.TableHeadersRow();
-
-                foreach (var opt in filtered)
+                ImGui.TextUnformatted(group.Name);
+                ImGui.TextDisabled(group.Type.Equals("Single", StringComparison.OrdinalIgnoreCase)
+                    ? "Dropdown: choose one" : "Checkboxes: choose any combination");
+                foreach (var option in group.Options)
                 {
-                    bool isSelected = sourceEmoteAssignments.Any(a => ReferenceEquals(a.SourceOption, opt));
-
-                    string emotesDisplay = string.Join(", ",
-                        opt.Entries
-                            .GroupBy(entry => entry.EmoteRowId)
-                            .Select(group => group.First())
-                            .Select(e =>
-                            string.IsNullOrEmpty(e.EmoteCommand)
-                                ? e.EmoteName
-                                : $"{e.EmoteName} ({e.EmoteCommand})"));
-
-                    ImGui.TableNextRow();
-                    ImGui.TableNextColumn();
-
-                    var label = $"{opt.GroupName}##{opt.SourceId}";
-
-                    if (ImGui.Selectable(label, isSelected, ImGuiSelectableFlags.SpanAllColumns) && !isCreatingOverrides)
+                    var selected = variationSelections.Contains(option);
+                    if (ImGui.Checkbox($"{option.OptionName}##Choice_{option.SourceId}", ref selected) && !isCreatingOverrides)
                     {
-                        selectedOption = opt;
-                        if (isSelected)
-                            sourceEmoteAssignments.RemoveAll(a => ReferenceEquals(a.SourceOption, opt));
+                        if (selected)
+                        {
+                            if (group.Type.Equals("Single", StringComparison.OrdinalIgnoreCase))
+                                variationSelections.RemoveAll(choice => choice.SourceGroupId == group.SourceId);
+                            variationSelections.Add(option);
+                        }
                         else
-                            sourceEmoteAssignments.AddRange(OptionAssignmentPlanner.Build(opt));
+                            variationSelections.Remove(option);
                     }
-
-                    ImGui.TableNextColumn();
-                    ImGui.TextWrapped(opt.OptionName);
-
-                    ImGui.TableNextColumn();
-                    ImGui.TextWrapped(emotesDisplay);
+                    ImGui.SameLine();
+                    ImGui.TextDisabled(option.Entries.Count == 0 ? "Effects / supporting files" :
+                        string.Join(", ", option.Entries.Select(entry => entry.EmoteCommand).Distinct()));
                 }
-
-                ImGui.EndTable();
-            }
-
-            ImGui.Spacing();
-
-            ImGui.Text($"Selected {sourceEmoteAssignments.Select(a => a.SourceOption).Distinct().Count()} option(s).");
-            if (sourceEmoteAssignments.Count > 0 && ImGui.Button("Assign emotes to selected options"))
-                currentStep = WizardStep.SelectTarget;
-
-            if (selectedOption == null || !filtered.Contains(selectedOption))
-            {
-                ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.8f, 0.8f, 0.8f, 1f));
-                ImGui.Text("Select options above, then continue to Step 3.");
-                ImGui.PopStyleColor();
-                EndCard();
-                return;
-            }
-
-            var selected = selectedOption;
-
-            ImGui.TextColored(new Vector4(0.85f, 0.9f, 1f, 1f), "Selected option");
-            ImGui.Text($"Group:  {selected.GroupName}");
-            ImGui.Text($"Option: {selected.OptionName}");
-
-            ImGui.Spacing();
-            ImGui.Text("Affected emotes / files:");
-
-            var flagsDetails = ImGuiTableFlags.RowBg
-                               | ImGuiTableFlags.BordersInnerV
-                               | ImGuiTableFlags.SizingStretchSame;
-
-            if (ImGui.BeginTable("NullEmoteSwapperSelectedOptionTable", 4, flagsDetails))
-            {
-                ImGui.TableSetupColumn("Emote");
-                ImGui.TableSetupColumn("Command");
-                ImGui.TableSetupColumn("Game path");
-                ImGui.TableSetupColumn("Modded PAP");
-                ImGui.TableHeadersRow();
-
-                foreach (var e in selected.Entries)
+                if (ImGui.Button($"Add every choice as a separate variation##Expand_{group.SourceId}") && !isCreatingOverrides)
                 {
-                    ImGui.TableNextRow();
-
-                    ImGui.TableNextColumn();
-                    ImGui.TextUnformatted(e.EmoteName);
-
-                    ImGui.TableNextColumn();
-                    ImGui.TextUnformatted(e.EmoteCommand);
-
-                    ImGui.TableNextColumn();
-                    ImGui.TextWrapped(e.GamePath);
-
-                    ImGui.TableNextColumn();
-                    ImGui.TextWrapped(e.ModdedPapPath);
+                    try { QueueVariations(ModVariationComposer.ExpandGroup(catalog, group, variationSelections)); }
+                    catch (Exception ex) { lastScanError = ex.Message; }
                 }
-
-                ImGui.EndTable();
+                ImGui.Separator();
             }
-
+            ImGui.InputText("Variation name (optional)", ref variationName, 200);
+            if (ImGui.Button("Add selected combination") && !isCreatingOverrides)
+            {
+                try
+                {
+                    QueueVariations(new[] { ModVariationComposer.Compose(catalog, variationSelections, variationName) });
+                    variationName = string.Empty;
+                }
+                catch (Exception ex) { lastScanError = ex.Message; }
+            }
+            ImGui.Spacing();
+            var queued = sourceEmoteAssignments.Select(assignment => assignment.SourceOption).Distinct().ToList();
+            ImGui.Text($"Queued {queued.Count} variation(s). Each will get its own checkbox in Penumbra.");
+            foreach (var variation in queued)
+            {
+                if (ImGui.SmallButton($"Remove##Remove_{variation.SourceId}") && !isCreatingOverrides)
+                    sourceEmoteAssignments.RemoveAll(assignment => ReferenceEquals(assignment.SourceOption, variation));
+                ImGui.SameLine();
+                ImGui.TextWrapped(variation.OptionName);
+            }
+            if (sourceEmoteAssignments.Count > 0 && ImGui.Button("Assign emotes to queued variations"))
+                currentStep = WizardStep.SelectTarget;
             EndCard();
         }
 
         // ======================================
-        // STEP 3 – Target emote selection
+        // STEP 3 â€“ Target emote selection
         // ======================================
         private void DrawStepCard_SelectTarget()
         {
-            BeginCard("NullEmoteSwapperStepTarget", "Step 3 – Assign replacement triggers",
-                "Assign replacements per option and per emote. Shared source emotes remain independent.");
+            BeginCard("NullEmoteSwapperStepTarget", "Step 3 â€“ Assign replacement triggers",
+                "Each queued variation has independent emote assignments. Keep an original trigger or choose a replacement.");
 
             if (selectedModDirectory == null)
             {
@@ -747,7 +691,7 @@ namespace NullEmoteSwapper.Windows
             }
 
             ImGui.Text($"Selected {sourceEmoteAssignments.Select(a => a.SourceOption).Distinct().Count()} option(s), {sourceEmoteAssignments.Count} emote assignment(s).");
-            ImGui.TextWrapped("For example: Option A /dance to /wave, and Option B /dance to /cheer. Each option becomes a separate copy in Penumbra.");
+            ImGui.TextWrapped("For example: Effect 1 /imperialdance to /poke, and Effect 2 /imperialdance to /poke or another emote. Add the same combination again in Step 2 to create more target variations.");
             ImGui.Spacing();
 
             if (sourceEmoteAssignments.Count == 0)
@@ -788,7 +732,9 @@ namespace NullEmoteSwapper.Windows
                     ImGui.TableNextColumn();
                     string preview = assignment.TargetEmote == null
                         ? "Select an emote..."
-                        : $"{assignment.TargetEmote.Name} ({assignment.TargetEmote.Command})";
+                        : assignment.TargetEmote.RowId == assignment.SourceEmoteRowId
+                            ? $"Keep original ({assignment.SourceEmoteCommand})"
+                            : $"{assignment.TargetEmote.Name} ({assignment.TargetEmote.Command})";
                     if (ImGui.BeginCombo($"##TargetEmote_{assignment.SourceOption.SourceId}_{assignment.SourceEmoteRowId}", preview))
                     {
                         string targetSearch = assignment.TargetSearch;
@@ -797,6 +743,16 @@ namespace NullEmoteSwapper.Windows
                             assignment.TargetSearch = targetSearch;
                         ImGui.PopItemWidth();
 
+                        if (ImGui.Selectable($"Keep original ({assignment.SourceEmoteCommand})##Keep_{assignment.SourceOption.SourceId}_{assignment.SourceEmoteRowId}",
+                            assignment.TargetEmote?.RowId == assignment.SourceEmoteRowId))
+                        {
+                            assignment.TargetEmote = new LuminaEmote
+                            {
+                                RowId = assignment.SourceEmoteRowId, Name = assignment.SourceEmoteName,
+                                Command = assignment.SourceEmoteCommand
+                            };
+                            ImGui.CloseCurrentPopup();
+                        }
                         var results = EmoteLibrary.AllEmotes
                             .Where(emote => string.IsNullOrWhiteSpace(assignment.TargetSearch)
                                 || emote.Name.Contains(assignment.TargetSearch, StringComparison.OrdinalIgnoreCase)
@@ -813,11 +769,17 @@ namespace NullEmoteSwapper.Windows
                                 ImGui.CloseCurrentPopup();
                                 Plugin.Log.Information("[NullEmoteSwapper] Assigned source emote {SourceCommand} (row {SourceRowId}) to target {TargetCommand} (row {TargetRowId}).",
                                     assignment.SourceEmoteCommand, assignment.SourceEmoteRowId, emote.Command, emote.RowId);
-                                Svc.Chat.Print($"[NullEmoteSwapper] Assigned {assignment.SourceEmoteCommand} → {emote.Command}.");
+                                Svc.Chat.Print($"[NullEmoteSwapper] Assigned {assignment.SourceEmoteCommand} â†’ {emote.Command}.");
                             }
                         }
 
                         ImGui.EndCombo();
+                    }
+                    if (assignment.TargetEmote != null
+                        && ImGui.SmallButton($"Apply to all variations##ApplyAll_{assignment.SourceOption.SourceId}_{assignment.SourceEmoteRowId}"))
+                    {
+                        foreach (var other in sourceEmoteAssignments.Where(other => other.SourceEmoteRowId == assignment.SourceEmoteRowId))
+                            other.TargetEmote = assignment.TargetEmote;
                     }
                 }
 
@@ -849,7 +811,7 @@ namespace NullEmoteSwapper.Windows
                     ? assignment.SourceEmoteName
                     : assignment.SourceEmoteCommand;
                 string targetCommand = assignment.TargetEmote?.Command ?? "(choose a target)";
-                ImGui.TextWrapped($"({assignment.SourceOption.GroupName}) {assignment.SourceOption.OptionName}: {sourceCommand} → {targetCommand}");
+                ImGui.TextWrapped($"({assignment.SourceOption.GroupName}) {assignment.SourceOption.OptionName}: {sourceCommand} â†’ {targetCommand}");
             }
 
             ImGui.Spacing();
@@ -870,7 +832,7 @@ namespace NullEmoteSwapper.Windows
 
             ImGui.SameLine();
             ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.8f, 0.8f, 0.8f, 1f));
-            ImGui.TextDisabled("Creates a separate copy of each selected option, including its supporting files and settings.");
+            ImGui.TextDisabled("Creates a checkbox for each complete variation, including the chosen effects and supporting files.");
             ImGui.PopStyleColor();
 
             if (!canCreate)
@@ -899,7 +861,7 @@ namespace NullEmoteSwapper.Windows
                         break;
                     completed++;
                 }
-                Svc.Chat.Print($"[NullEmoteSwapper] Created {completed} of {assignments.Select(a => a.SourceOption).Distinct().Count()} option copies. Enable the copies you want in Penumbra’s NullEmoteSwapper group.");
+                Svc.Chat.Print($"[NullEmoteSwapper] Created {completed} of {assignments.Select(a => a.SourceOption).Distinct().Count()} option copies. Enable the copies you want in Penumbraâ€™s NullEmoteSwapper group.");
             }
             finally
             {
@@ -916,7 +878,7 @@ namespace NullEmoteSwapper.Windows
             }
 
             var assignmentSummary = string.Join(", ", assignments.Select(assignment =>
-                $"{assignment.SourceEmoteCommand} → {assignment.TargetEmote?.Command ?? "<unassigned>"}"));
+                $"{assignment.SourceEmoteCommand} â†’ {assignment.TargetEmote?.Command ?? "<unassigned>"}"));
             Plugin.Log.Information("[NullEmoteSwapper] Override creation started for mod {ModDirectory}, option {GroupName} / {OptionName}, assignments: {Assignments}.",
                 selectedDirectory, source.GroupName, source.OptionName, assignmentSummary);
             Svc.Chat.Print($"[NullEmoteSwapper] Creating {assignments.Count} emote override(s): {assignmentSummary}.");
@@ -994,6 +956,16 @@ namespace NullEmoteSwapper.Windows
                         }
 
                         var target = assignment.TargetEmote!;
+                        if (target.RowId == assignment.SourceEmoteRowId)
+                        {
+                            foreach (var entry in assignment.SourceEntries)
+                            {
+                                if (!finalMappings.TryAdd(entry.GamePath, entry.ModdedPapPath))
+                                    throw new InvalidDataException($"Original and swapped emotes conflict at {entry.GamePath}.");
+                            }
+                            mappingDescriptions.Add($"{assignment.SourceEmoteCommand} (original)");
+                            continue;
+                        }
                         var targetGamePaths = PapResolver.ResolvePapFiles(target.PrimaryTimelineKey);
                         if (targetGamePaths.Count == 0)
                             throw new InvalidDataException($"No game PAP paths were found for {target.Name} ({target.Command}).");
@@ -1034,7 +1006,7 @@ namespace NullEmoteSwapper.Windows
                         string sourceCommand = string.IsNullOrWhiteSpace(assignment.SourceEmoteCommand)
                             ? assignment.SourceEmoteName
                             : assignment.SourceEmoteCommand;
-                        mappingDescriptions.Add($"{sourceCommand} → {target.Command}");
+                        mappingDescriptions.Add($"{sourceCommand} â†’ {target.Command}");
                     }
 
                     // PAP parsing uses Dalamud game data, so run all conversions on the framework thread
@@ -1056,7 +1028,7 @@ namespace NullEmoteSwapper.Windows
                         }
                     });
 
-                    string optionName = $"({source.GroupName}) {source.OptionName} → {string.Join("; ", mappingDescriptions)} (edited by Null)";
+                    string optionName = $"({source.GroupName}) {source.OptionName} â†’ {string.Join("; ", mappingDescriptions)} (edited by Null)";
                     string description = $"Emote trigger mappings created by NullEmoteSwapper: {string.Join("; ", mappingDescriptions)}";
                     Plugin.Log.Information("[NullEmoteSwapper] Writing Penumbra option {OptionName} with {MappingCount} game path mappings.", optionName, finalMappings.Count);
                     Penumbra.PenumbraGroupWriter.CreateOrUpdateNullEmoteSwapperGroup(

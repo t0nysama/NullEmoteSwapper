@@ -13,20 +13,23 @@ NullEmoteSwapper is a Dalamud plugin for changing emote triggers in Penumbra mod
 
 Keep this same repository URL. Plugin updates are delivered through Dalamud when a new release is published.
 
-## Per-option emote copies (0.1.2)
+## Complete option variations (0.1.3)
+
+The plugin includes all file-based dropdown and checkbox choices, including effect/texture/sound options that contain no animation PAP of their own. It combines the selected choices with the required/shared animation before creating a copy.
 
 1. Open `/nullemoteswapper`, select a mod, and scan it.
-2. In **Source options**, select every option you want to copy. Click a selected row again to deselect it, then choose **Assign emotes to selected options**.
-3. Assign a replacement to each emote under each selected option. Options remain independent even if they use the same source emote or have identical display names.
-4. Click **Create option copies**. In Penumbra, enable the copies you want under the mod's **NullEmoteSwapper** group.
+2. In **Variations**, select the required/base animation and the effect choices you want. A dropdown group allows one choice; a checkbox group allows several.
+3. Click **Add selected combination** to queue that complete variation. Repeat with different choices, or use **Add every choice as a separate variation** under a group to queue each of its choices with the other groups' current selections.
+4. Choose **Assign emotes to queued variations**. Each source emote in each queued variation has an independent target, including **Keep original**. **Apply to all variations** applies the current target to that same source emote across the queue.
+5. Click **Create option copies**. Enable the resulting checkboxes under the mod's **NullEmoteSwapper** groups in Penumbra.
 
-For example, a dropdown may have **Dance A** and **Dance B**, both using `/dance`. Select both and assign **Dance A /dance → /wave** and **Dance B /dance → /cheer**. This creates two independently selectable copies; each uses that option's own animation files.
+For **Chain Leash VFX**, leave **Required / Base Files** selected, then use **Add every choice as a separate variation** under **Variants**. This queues all 16 leash variations with the shared Imperial Salute animation. Assign `/poke` to one and use **Apply to all variations** if all 16 should use `/poke`. Each generated checkbox includes its own leash effect and texture mappings.
 
-Each copy retains the source option's supporting file mappings, file swaps, manipulations, and other option fields. Recognized source emote mappings are replaced by generated PAP copies. The original options and source files stay intact. Existing per-emote assignments within a multi-emote option are supported.
+To make several emote versions of the same effect combination, add that combination more than once and assign different targets to the queued copies. For mods replacing multiple emotes, keep or replace each source emote separately within every combination. Selections start with the mod's declared defaults, rather than a particular Penumbra collection's current settings.
 
-Replacement targets must be unique within an individual option. Different option copies may use the same replacement target, but enable only one copy for that target at a time. Supporting assets that use identical game paths can also conflict when different copies are enabled together; Penumbra's normal conflict resolution applies. Auxiliary option groups are not automatically combined with the selected option.
+Each copy contains the effective selected files, file swaps, and manipulations, plus the generated PAP mappings. Original groups and files stay intact. File and option priorities determine which mapping wins when selected choices overlap. File-based Single and Multi groups are supported.
 
-Generated options are excluded from subsequent scans. Use the existing remove-overrides control to remove generated copies and PAPs. Creation reports how many copies succeeded if an individual option fails.
+Replacement targets must be unique within an individual variation. Copies that share a replacement target or conflicting effect/texture paths are alternatives: enable one at a time. This does not create private copies of internally referenced effect resources for simultaneous use at different emotes. Generated options are excluded from future scans. More than 32 copies are split into additional generated groups; the remove-overrides control removes all generated pages and PAPs.
 
 ## Build and validation
 
@@ -39,7 +42,7 @@ dotnet run --project tests/RegressionTests -c Release
 
 Dalamud libraries are resolved from XIVLauncher's development folder by default; `DALAMUD_HOME` can select a different installation. The packaged build is generated at `NullEmoteSwapper/bin/Release/NullEmoteSwapper/latest.zip`.
 
-The regression scenarios compile the production scanner, assignment planner, and metadata writer with stubbed game lookup/logging. They verify option independence, race variants, complete payload copying, preservation of original data, both metadata formats, generated-option filtering, and failure handling. PAP conversion and the UI still require in-game testing.
+The regression scenarios compile the production scanner, assignment planner, variation composer, and metadata writer with stubbed game lookup/logging. They verify option independence, race variants, complete payload copying, preservation of original data, both metadata formats, generated-option filtering, dropdown exclusivity, shared animations with effect-only variations, multi-checkbox combinations, original/swapped trigger mixtures, and group pagination. PAP conversion and the UI still require in-game testing.
 
 ### Source restoration
 
