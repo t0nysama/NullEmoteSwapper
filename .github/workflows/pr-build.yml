@@ -1,0 +1,33 @@
+name: Build NullEmoteSwapper
+
+on:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+      - name: Run regression scenarios
+        run: dotnet run --project tests/RegressionTests -c Release
+      - name: Download Dalamud and existing plugin dependencies
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://goatcorp.github.io/dalamud-distrib/latest.zip -OutFile dalamud.zip
+          Expand-Archive dalamud.zip "$env:AppData/XIVLauncher/addon/Hooks/dev"
+          Invoke-WebRequest https://github.com/t0nysama/NullEmoteSwapper/releases/download/v0.1.1/latest.zip -OutFile plugin-dependencies.zip
+          Expand-Archive plugin-dependencies.zip lib
+      - name: Build plugin
+        run: dotnet build NullEmoteSwapper/NullEmoteSwapper.csproj -c Release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NullEmoteSwapper-test-build
+          path: NullEmoteSwapper/bin/Release/NullEmoteSwapper/latest.zip
+          if-no-files-found: error

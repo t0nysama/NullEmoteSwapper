@@ -1,0 +1,23 @@
+{
+  "Author": "Null",
+  "Name": "NullEmoteSwapper",
+  "InternalName": "NullEmoteSwapper",
+  "AssemblyVersion": "0.1.2.0",
+  "Description": "Change Emotes in Penumbra Mods.",
+  "ApplicableVersion": "any",
+  "Tags": [
+    "animation",
+    "anims",
+    "mods",
+    "dance",
+    "penumbra",
+    "emotes"
+  ],
+  "DalamudApiLevel": 15,
+  "LoadRequiredState": 0,
+  "LoadSync": false,
+  "CanUnloadAsync": false,
+  "LoadPriority": 0,
+  "Punchline": "Change Emotes in Penumbra Mods.",
+  "AcceptsFeedback": true
+}

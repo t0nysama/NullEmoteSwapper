@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Dalamud.NET.Sdk/15.0.0">
+  <PropertyGroup>
+    <Version>0.1.2</Version>
+    <PluginDependencyDirectory Condition="'$(PluginDependencyDirectory)' == ''">$(MSBuildProjectDirectory)\..\lib</PluginDependencyDirectory>
+    <Description>NullEmoteSwapper emote override plugin for Penumbra.</Description>
+    <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="NullEmoteSwapper.json" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Penumbra.Api" Version="5.12.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="ECommons">
+      <HintPath>$(PluginDependencyDirectory)\ECommons.dll</HintPath>
+    </Reference>
+    <Reference Include="VFXEditor">
+      <HintPath>$(PluginDependencyDirectory)\VFXEditor.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+</Project>
